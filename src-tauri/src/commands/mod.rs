@@ -1,0 +1,9 @@
+pub mod appointments;
+pub mod backup;
+pub mod doctors;
+pub mod expenses;
+pub mod labwork;
+pub mod license;
+pub mod patients;
+pub mod settings;
+pub mod users;
