@@ -1,13 +1,32 @@
 const en = {
   nav: {
     patients: 'Patients',
-    appointments: 'Appointments',
+    calendar: 'Calendar',
     doctors: 'Doctors',
     labwork: 'Lab Work',
     expenses: 'Expenses',
     stats: 'Statistics',
     settings: 'Settings',
     logout: 'Logout',
+  },
+  login: {
+    title: 'Login',
+    clinicName: 'Dental Clinic',
+    email: 'Email',
+    password: 'Password',
+    submit: 'Login',
+    errorInvalidCredentials: 'Email or password is incorrect',
+    errorGeneric: 'Login failed. Please try again',
+    loggingIn: 'Logging in...',
+  },
+  licenseGate: {
+    title: 'Activate License',
+    subtitle: 'The free trial period has expired. Please enter your license key.',
+    machineId: 'Machine ID',
+    keyPlaceholder: 'Enter your license key',
+    submit: 'Activate',
+    errorInvalidKey: 'Invalid license key',
+    validating: 'Validating...',
   },
   common: {
     save: 'Save',

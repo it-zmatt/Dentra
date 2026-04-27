@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use tauri::Manager;
 use tauri::State;
 use crate::db::DbPool;
 
@@ -22,15 +24,19 @@ pub struct Appointment {
 
 #[tauri::command]
 pub async fn get_appointments(db: State<'_, DbPool>) -> Result<Vec<Appointment>, String> {
-    let rows = sqlx::query!(
+    let rows = sqlx::query(
         "SELECT data FROM records WHERE store = 'appointments' ORDER BY created_at DESC"
     )
     .fetch_all(&db.0)
     .await
     .map_err(|e| e.to_string())?;
 
-    rows.iter()
-        .map(|r| serde_json::from_str::<Appointment>(&r.data).map_err(|e| e.to_string()))
+    rows
+        .iter()
+        .map(|r| {
+            let data: String = r.try_get("data").map_err(|e| e.to_string())?;
+            serde_json::from_str::<Appointment>(&data).map_err(|e| e.to_string())
+        })
         .collect()
 }
 
@@ -42,15 +48,15 @@ pub async fn save_appointment(
     let data = serde_json::to_string(&appointment).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp_millis();
 
-    sqlx::query!(
+    sqlx::query(
         "INSERT OR REPLACE INTO records (id, store, data, created_at, updated_at)
-         VALUES (?, 'appointments', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)",
-        appointment.id,
-        data,
-        appointment.id,
-        now,
-        now
+         VALUES (?, 'appointments', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)"
     )
+    .bind(&appointment.id)
+    .bind(data)
+    .bind(&appointment.id)
+    .bind(now)
+    .bind(now)
     .execute(&db.0)
     .await
     .map_err(|e| e.to_string())?;
@@ -60,7 +66,8 @@ pub async fn save_appointment(
 
 #[tauri::command]
 pub async fn delete_appointment(db: State<'_, DbPool>, id: String) -> Result<(), String> {
-    sqlx::query!("DELETE FROM records WHERE id = ? AND store = 'appointments'", id)
+    sqlx::query("DELETE FROM records WHERE id = ? AND store = 'appointments'")
+        .bind(id)
         .execute(&db.0)
         .await
         .map_err(|e| e.to_string())?;
@@ -73,7 +80,6 @@ pub async fn save_appointment_photo(
     appointment_id: String,
     source_path: String,
 ) -> Result<String, String> {
-    use tauri_plugin_fs::FsExt;
     use std::path::Path;
 
     let app_data = app

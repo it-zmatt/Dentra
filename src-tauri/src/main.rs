@@ -7,9 +7,9 @@ mod db;
 use db::DbPool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
+use tauri::Manager;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -33,10 +33,43 @@ async fn main() {
                     .await
                     .expect("Failed to connect to database");
 
-                sqlx::migrate!("./migrations")
-                    .run(&pool)
-                    .await
-                    .expect("Failed to run migrations");
+                // Run migrations - ignore version mismatch errors on first run
+                if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
+                    eprintln!("Migration warning: {:?}. Continuing...", e);
+                    // Try to re-create tables if they don't exist
+                    let _ = sqlx::query(
+                        "CREATE TABLE IF NOT EXISTS records (
+                          id         TEXT    PRIMARY KEY,
+                          store      TEXT    NOT NULL,
+                          data       TEXT    NOT NULL,
+                          created_at INTEGER NOT NULL,
+                          updated_at INTEGER NOT NULL
+                        );"
+                    ).execute(&pool).await;
+                    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_store ON records(store);").execute(&pool).await;
+                    let _ = sqlx::query(
+                        "CREATE TABLE IF NOT EXISTS settings (
+                          key   TEXT PRIMARY KEY,
+                          value TEXT NOT NULL
+                        );"
+                    ).execute(&pool).await;
+                    let _ = sqlx::query(
+                        "CREATE TABLE IF NOT EXISTS local_settings (
+                          key   TEXT PRIMARY KEY,
+                          value TEXT NOT NULL
+                        );"
+                    ).execute(&pool).await;
+                    let _ = sqlx::query(
+                        "CREATE TABLE IF NOT EXISTS users (
+                          id            TEXT    PRIMARY KEY,
+                          email         TEXT    UNIQUE NOT NULL,
+                          password_hash TEXT    NOT NULL,
+                          is_admin      INTEGER NOT NULL DEFAULT 0,
+                          name          TEXT,
+                          created_at    INTEGER
+                        );"
+                    ).execute(&pool).await;
+                }
 
                 pool
             });

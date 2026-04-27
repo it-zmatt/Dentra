@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use tauri::State;
 use crate::db::DbPool;
 
@@ -15,15 +16,19 @@ pub struct Doctor {
 
 #[tauri::command]
 pub async fn get_doctors(db: State<'_, DbPool>) -> Result<Vec<Doctor>, String> {
-    let rows = sqlx::query!(
+    let rows = sqlx::query(
         "SELECT data FROM records WHERE store = 'doctors' ORDER BY created_at DESC"
     )
     .fetch_all(&db.0)
     .await
     .map_err(|e| e.to_string())?;
 
-    rows.iter()
-        .map(|r| serde_json::from_str::<Doctor>(&r.data).map_err(|e| e.to_string()))
+    rows
+        .iter()
+        .map(|r| {
+            let data: String = r.try_get("data").map_err(|e| e.to_string())?;
+            serde_json::from_str::<Doctor>(&data).map_err(|e| e.to_string())
+        })
         .collect()
 }
 
@@ -32,15 +37,15 @@ pub async fn save_doctor(db: State<'_, DbPool>, doctor: Doctor) -> Result<(), St
     let data = serde_json::to_string(&doctor).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp_millis();
 
-    sqlx::query!(
+    sqlx::query(
         "INSERT OR REPLACE INTO records (id, store, data, created_at, updated_at)
-         VALUES (?, 'doctors', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)",
-        doctor.id,
-        data,
-        doctor.id,
-        now,
-        now
+         VALUES (?, 'doctors', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)"
     )
+    .bind(&doctor.id)
+    .bind(data)
+    .bind(&doctor.id)
+    .bind(now)
+    .bind(now)
     .execute(&db.0)
     .await
     .map_err(|e| e.to_string())?;
@@ -50,7 +55,8 @@ pub async fn save_doctor(db: State<'_, DbPool>, doctor: Doctor) -> Result<(), St
 
 #[tauri::command]
 pub async fn delete_doctor(db: State<'_, DbPool>, id: String) -> Result<(), String> {
-    sqlx::query!("DELETE FROM records WHERE id = ? AND store = 'doctors'", id)
+    sqlx::query("DELETE FROM records WHERE id = ? AND store = 'doctors'")
+        .bind(id)
         .execute(&db.0)
         .await
         .map_err(|e| e.to_string())?;

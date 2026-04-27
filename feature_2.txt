@@ -1,0 +1,1186 @@
+diff --git a/docs/DB_SCHEMA.md b/docs/DB_SCHEMA.md
+index 4f4c945..5293caa 100644
+--- a/docs/DB_SCHEMA.md
++++ b/docs/DB_SCHEMA.md
+@@ -89,10 +89,14 @@ CREATE TABLE IF NOT EXISTS users (
+   password_hash TEXT    NOT NULL,
+   is_admin      INTEGER NOT NULL DEFAULT 0,
+   name          TEXT,
+-  created_at    INTEGER
++  created_at    INTEGER,
++  permissions_json TEXT NOT NULL DEFAULT '[false,false,false,false,false,false]'
+ );
+ ```
+ 
++`permissions_json` stores the per-user module access mask as a JSON array of 6 booleans.
++Malformed or missing payloads must be treated as deny-all (`[false,false,false,false,false,false]`).
++
+ ---
+ 
+ ## JSON shapes — stored in records.data
+diff --git a/package.json b/package.json
+index ad453a5..85db703 100644
+--- a/package.json
++++ b/package.json
+@@ -4,7 +4,7 @@
+   "version": "0.1.0",
+   "type": "module",
+   "scripts": {
+-    "dev": "vite",
++    "dev": "vite --port 5173 --strictPort",
+     "build": "tsc && vite build",
+     "preview": "vite preview",
+     "tauri": "tauri"
+@@ -15,7 +15,6 @@
+     "@tauri-apps/api": "^2.0.0",
+     "@tauri-apps/plugin-dialog": "^2.0.0",
+     "@tauri-apps/plugin-fs": "^2.0.0",
+-    "@tauri-apps/plugin-path": "^2.0.0",
+     "@tauri-apps/plugin-process": "^2.0.0",
+     "@tauri-apps/plugin-shell": "^2.0.0",
+     "date-fns": "^3.6.0",
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index 86cee83..9ffb168 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -5,10 +5,6 @@ description = "Dentra — Dental Clinic Management for Algerian Practices"
+ authors = []
+ edition = "2021"
+ 
+-[lib]
+-name = "dentra_lib"
+-crate-type = ["staticlib", "cdylib", "rlib"]
+-
+ [build-dependencies]
+ tauri-build = { version = "2", features = [] }
+ 
+diff --git a/src-tauri/src/commands/appointments.rs b/src-tauri/src/commands/appointments.rs
+index de5c3ab..a35fd93 100644
+--- a/src-tauri/src/commands/appointments.rs
++++ b/src-tauri/src/commands/appointments.rs
+@@ -1,4 +1,6 @@
+ use serde::{Deserialize, Serialize};
++use sqlx::Row;
++use tauri::Manager;
+ use tauri::State;
+ use crate::db::DbPool;
+ 
+@@ -22,15 +24,19 @@ pub struct Appointment {
+ 
+ #[tauri::command]
+ pub async fn get_appointments(db: State<'_, DbPool>) -> Result<Vec<Appointment>, String> {
+-    let rows = sqlx::query!(
++    let rows = sqlx::query(
+         "SELECT data FROM records WHERE store = 'appointments' ORDER BY created_at DESC"
+     )
+     .fetch_all(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+ 
+-    rows.iter()
+-        .map(|r| serde_json::from_str::<Appointment>(&r.data).map_err(|e| e.to_string()))
++    rows
++        .iter()
++        .map(|r| {
++            let data: String = r.try_get("data").map_err(|e| e.to_string())?;
++            serde_json::from_str::<Appointment>(&data).map_err(|e| e.to_string())
++        })
+         .collect()
+ }
+ 
+@@ -42,15 +48,15 @@ pub async fn save_appointment(
+     let data = serde_json::to_string(&appointment).map_err(|e| e.to_string())?;
+     let now = chrono::Utc::now().timestamp_millis();
+ 
+-    sqlx::query!(
++    sqlx::query(
+         "INSERT OR REPLACE INTO records (id, store, data, created_at, updated_at)
+-         VALUES (?, 'appointments', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)",
+-        appointment.id,
+-        data,
+-        appointment.id,
+-        now,
+-        now
++         VALUES (?, 'appointments', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)"
+     )
++    .bind(&appointment.id)
++    .bind(data)
++    .bind(&appointment.id)
++    .bind(now)
++    .bind(now)
+     .execute(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+@@ -60,7 +66,8 @@ pub async fn save_appointment(
+ 
+ #[tauri::command]
+ pub async fn delete_appointment(db: State<'_, DbPool>, id: String) -> Result<(), String> {
+-    sqlx::query!("DELETE FROM records WHERE id = ? AND store = 'appointments'", id)
++    sqlx::query("DELETE FROM records WHERE id = ? AND store = 'appointments'")
++        .bind(id)
+         .execute(&db.0)
+         .await
+         .map_err(|e| e.to_string())?;
+@@ -73,7 +80,6 @@ pub async fn save_appointment_photo(
+     appointment_id: String,
+     source_path: String,
+ ) -> Result<String, String> {
+-    use tauri_plugin_fs::FsExt;
+     use std::path::Path;
+ 
+     let app_data = app
+diff --git a/src-tauri/src/commands/backup.rs b/src-tauri/src/commands/backup.rs
+index e4c7b78..d45fc67 100644
+--- a/src-tauri/src/commands/backup.rs
++++ b/src-tauri/src/commands/backup.rs
+@@ -1,10 +1,9 @@
+-use tauri::State;
+-use crate::db::DbPool;
++use tauri::Manager;
+ 
+ #[tauri::command]
+ pub async fn export_backup(app: tauri::AppHandle, dest_folder: String) -> Result<String, String> {
+     use std::io::Write;
+-    use zip::write::FileOptions;
++    use zip::write::SimpleFileOptions;
+     use chrono::Local;
+ 
+     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+@@ -17,7 +16,7 @@ pub async fn export_backup(app: tauri::AppHandle, dest_folder: String) -> Result
+ 
+     let file = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
+     let mut zip = zip::ZipWriter::new(file);
+-    let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
++    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+ 
+     // Add data.db
+     if db_path.exists() {
+@@ -40,7 +39,7 @@ fn add_dir_to_zip(
+     zip: &mut zip::ZipWriter<std::fs::File>,
+     base: &std::path::Path,
+     dir: &std::path::Path,
+-    options: zip::write::FileOptions,
++    options: zip::write::SimpleFileOptions,
+ ) -> Result<(), String> {
+     use std::io::Write;
+ 
+diff --git a/src-tauri/src/commands/doctors.rs b/src-tauri/src/commands/doctors.rs
+index 3e6ff1f..cdba6d8 100644
+--- a/src-tauri/src/commands/doctors.rs
++++ b/src-tauri/src/commands/doctors.rs
+@@ -1,4 +1,5 @@
+ use serde::{Deserialize, Serialize};
++use sqlx::Row;
+ use tauri::State;
+ use crate::db::DbPool;
+ 
+@@ -15,15 +16,19 @@ pub struct Doctor {
+ 
+ #[tauri::command]
+ pub async fn get_doctors(db: State<'_, DbPool>) -> Result<Vec<Doctor>, String> {
+-    let rows = sqlx::query!(
++    let rows = sqlx::query(
+         "SELECT data FROM records WHERE store = 'doctors' ORDER BY created_at DESC"
+     )
+     .fetch_all(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+ 
+-    rows.iter()
+-        .map(|r| serde_json::from_str::<Doctor>(&r.data).map_err(|e| e.to_string()))
++    rows
++        .iter()
++        .map(|r| {
++            let data: String = r.try_get("data").map_err(|e| e.to_string())?;
++            serde_json::from_str::<Doctor>(&data).map_err(|e| e.to_string())
++        })
+         .collect()
+ }
+ 
+@@ -32,15 +37,15 @@ pub async fn save_doctor(db: State<'_, DbPool>, doctor: Doctor) -> Result<(), St
+     let data = serde_json::to_string(&doctor).map_err(|e| e.to_string())?;
+     let now = chrono::Utc::now().timestamp_millis();
+ 
+-    sqlx::query!(
++    sqlx::query(
+         "INSERT OR REPLACE INTO records (id, store, data, created_at, updated_at)
+-         VALUES (?, 'doctors', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)",
+-        doctor.id,
+-        data,
+-        doctor.id,
+-        now,
+-        now
++         VALUES (?, 'doctors', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)"
+     )
++    .bind(&doctor.id)
++    .bind(data)
++    .bind(&doctor.id)
++    .bind(now)
++    .bind(now)
+     .execute(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+@@ -50,7 +55,8 @@ pub async fn save_doctor(db: State<'_, DbPool>, doctor: Doctor) -> Result<(), St
+ 
+ #[tauri::command]
+ pub async fn delete_doctor(db: State<'_, DbPool>, id: String) -> Result<(), String> {
+-    sqlx::query!("DELETE FROM records WHERE id = ? AND store = 'doctors'", id)
++    sqlx::query("DELETE FROM records WHERE id = ? AND store = 'doctors'")
++        .bind(id)
+         .execute(&db.0)
+         .await
+         .map_err(|e| e.to_string())?;
+diff --git a/src-tauri/src/commands/expenses.rs b/src-tauri/src/commands/expenses.rs
+index 0a5d775..5400478 100644
+--- a/src-tauri/src/commands/expenses.rs
++++ b/src-tauri/src/commands/expenses.rs
+@@ -1,4 +1,5 @@
+ use serde::{Deserialize, Serialize};
++use sqlx::Row;
+ use tauri::State;
+ use crate::db::DbPool;
+ 
+@@ -21,15 +22,19 @@ pub struct Expense {
+ 
+ #[tauri::command]
+ pub async fn get_expenses(db: State<'_, DbPool>) -> Result<Vec<Expense>, String> {
+-    let rows = sqlx::query!(
++    let rows = sqlx::query(
+         "SELECT data FROM records WHERE store = 'expenses' ORDER BY created_at DESC"
+     )
+     .fetch_all(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+ 
+-    rows.iter()
+-        .map(|r| serde_json::from_str::<Expense>(&r.data).map_err(|e| e.to_string()))
++    rows
++        .iter()
++        .map(|r| {
++            let data: String = r.try_get("data").map_err(|e| e.to_string())?;
++            serde_json::from_str::<Expense>(&data).map_err(|e| e.to_string())
++        })
+         .collect()
+ }
+ 
+@@ -38,15 +43,15 @@ pub async fn save_expense(db: State<'_, DbPool>, expense: Expense) -> Result<(),
+     let data = serde_json::to_string(&expense).map_err(|e| e.to_string())?;
+     let now = chrono::Utc::now().timestamp_millis();
+ 
+-    sqlx::query!(
++    sqlx::query(
+         "INSERT OR REPLACE INTO records (id, store, data, created_at, updated_at)
+-         VALUES (?, 'expenses', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)",
+-        expense.id,
+-        data,
+-        expense.id,
+-        now,
+-        now
++         VALUES (?, 'expenses', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)"
+     )
++    .bind(&expense.id)
++    .bind(data)
++    .bind(&expense.id)
++    .bind(now)
++    .bind(now)
+     .execute(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+@@ -56,7 +61,8 @@ pub async fn save_expense(db: State<'_, DbPool>, expense: Expense) -> Result<(),
+ 
+ #[tauri::command]
+ pub async fn delete_expense(db: State<'_, DbPool>, id: String) -> Result<(), String> {
+-    sqlx::query!("DELETE FROM records WHERE id = ? AND store = 'expenses'", id)
++    sqlx::query("DELETE FROM records WHERE id = ? AND store = 'expenses'")
++        .bind(id)
+         .execute(&db.0)
+         .await
+         .map_err(|e| e.to_string())?;
+diff --git a/src-tauri/src/commands/labwork.rs b/src-tauri/src/commands/labwork.rs
+index ee786b8..3822fcb 100644
+--- a/src-tauri/src/commands/labwork.rs
++++ b/src-tauri/src/commands/labwork.rs
+@@ -1,4 +1,5 @@
+ use serde::{Deserialize, Serialize};
++use sqlx::Row;
+ use tauri::State;
+ use crate::db::DbPool;
+ 
+@@ -20,15 +21,19 @@ pub struct Labwork {
+ 
+ #[tauri::command]
+ pub async fn get_labworks(db: State<'_, DbPool>) -> Result<Vec<Labwork>, String> {
+-    let rows = sqlx::query!(
++    let rows = sqlx::query(
+         "SELECT data FROM records WHERE store = 'labworks' ORDER BY created_at DESC"
+     )
+     .fetch_all(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+ 
+-    rows.iter()
+-        .map(|r| serde_json::from_str::<Labwork>(&r.data).map_err(|e| e.to_string()))
++    rows
++        .iter()
++        .map(|r| {
++            let data: String = r.try_get("data").map_err(|e| e.to_string())?;
++            serde_json::from_str::<Labwork>(&data).map_err(|e| e.to_string())
++        })
+         .collect()
+ }
+ 
+@@ -37,15 +42,15 @@ pub async fn save_labwork(db: State<'_, DbPool>, labwork: Labwork) -> Result<(),
+     let data = serde_json::to_string(&labwork).map_err(|e| e.to_string())?;
+     let now = chrono::Utc::now().timestamp_millis();
+ 
+-    sqlx::query!(
++    sqlx::query(
+         "INSERT OR REPLACE INTO records (id, store, data, created_at, updated_at)
+-         VALUES (?, 'labworks', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)",
+-        labwork.id,
+-        data,
+-        labwork.id,
+-        now,
+-        now
++         VALUES (?, 'labworks', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)"
+     )
++    .bind(&labwork.id)
++    .bind(data)
++    .bind(&labwork.id)
++    .bind(now)
++    .bind(now)
+     .execute(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+@@ -55,7 +60,8 @@ pub async fn save_labwork(db: State<'_, DbPool>, labwork: Labwork) -> Result<(),
+ 
+ #[tauri::command]
+ pub async fn delete_labwork(db: State<'_, DbPool>, id: String) -> Result<(), String> {
+-    sqlx::query!("DELETE FROM records WHERE id = ? AND store = 'labworks'", id)
++    sqlx::query("DELETE FROM records WHERE id = ? AND store = 'labworks'")
++        .bind(id)
+         .execute(&db.0)
+         .await
+         .map_err(|e| e.to_string())?;
+diff --git a/src-tauri/src/commands/license.rs b/src-tauri/src/commands/license.rs
+index 8d344af..a482565 100644
+--- a/src-tauri/src/commands/license.rs
++++ b/src-tauri/src/commands/license.rs
+@@ -1,6 +1,3 @@
+-use tauri::State;
+-use crate::db::DbPool;
+-
+ const DEVELOPER_SECRET: &str = "CHANGE_THIS_BEFORE_SHIPPING";
+ 
+ pub fn generate_id() -> String {
+diff --git a/src-tauri/src/commands/patients.rs b/src-tauri/src/commands/patients.rs
+index 7af1033..6633a40 100644
+--- a/src-tauri/src/commands/patients.rs
++++ b/src-tauri/src/commands/patients.rs
+@@ -1,4 +1,5 @@
+ use serde::{Deserialize, Serialize};
++use sqlx::Row;
+ use tauri::State;
+ use crate::db::DbPool;
+ 
+@@ -19,15 +20,19 @@ pub struct Patient {
+ 
+ #[tauri::command]
+ pub async fn get_patients(db: State<'_, DbPool>) -> Result<Vec<Patient>, String> {
+-    let rows = sqlx::query!(
++    let rows = sqlx::query(
+         "SELECT data FROM records WHERE store = 'patients' ORDER BY created_at DESC"
+     )
+     .fetch_all(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+ 
+-    rows.iter()
+-        .map(|r| serde_json::from_str::<Patient>(&r.data).map_err(|e| e.to_string()))
++    rows
++        .iter()
++        .map(|r| {
++            let data: String = r.try_get("data").map_err(|e| e.to_string())?;
++            serde_json::from_str::<Patient>(&data).map_err(|e| e.to_string())
++        })
+         .collect()
+ }
+ 
+@@ -36,15 +41,15 @@ pub async fn save_patient(db: State<'_, DbPool>, patient: Patient) -> Result<(),
+     let data = serde_json::to_string(&patient).map_err(|e| e.to_string())?;
+     let now = chrono::Utc::now().timestamp_millis();
+ 
+-    sqlx::query!(
++    sqlx::query(
+         "INSERT OR REPLACE INTO records (id, store, data, created_at, updated_at)
+-         VALUES (?, 'patients', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)",
+-        patient.id,
+-        data,
+-        patient.id,
+-        now,
+-        now
++         VALUES (?, 'patients', ?, COALESCE((SELECT created_at FROM records WHERE id = ?), ?), ?)"
+     )
++    .bind(&patient.id)
++    .bind(data)
++    .bind(&patient.id)
++    .bind(now)
++    .bind(now)
+     .execute(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+@@ -54,7 +59,8 @@ pub async fn save_patient(db: State<'_, DbPool>, patient: Patient) -> Result<(),
+ 
+ #[tauri::command]
+ pub async fn delete_patient(db: State<'_, DbPool>, id: String) -> Result<(), String> {
+-    sqlx::query!("DELETE FROM records WHERE id = ? AND store = 'patients'", id)
++    sqlx::query("DELETE FROM records WHERE id = ? AND store = 'patients'")
++        .bind(id)
+         .execute(&db.0)
+         .await
+         .map_err(|e| e.to_string())?;
+diff --git a/src-tauri/src/commands/users.rs b/src-tauri/src/commands/users.rs
+index 9f2171c..684bb7c 100644
+--- a/src-tauri/src/commands/users.rs
++++ b/src-tauri/src/commands/users.rs
+@@ -1,4 +1,5 @@
+ use serde::{Deserialize, Serialize};
++use sqlx::Row;
+ use tauri::State;
+ use crate::db::DbPool;
+ 
+@@ -10,6 +11,23 @@ pub struct User {
+     pub is_admin: bool,
+     pub name: String,
+     pub created_at: i64,
++    pub permissions: Vec<bool>,
++}
++
++fn default_permissions() -> Vec<bool> {
++    vec![false; 6]
++}
++
++fn parse_permissions_json(raw: Option<String>) -> Vec<bool> {
++    let Some(raw_json) = raw else {
++        return default_permissions();
++    };
++
++    let parsed: Result<Vec<bool>, _> = serde_json::from_str(&raw_json);
++    match parsed {
++        Ok(perms) if perms.len() == 6 => perms,
++        _ => default_permissions(),
++    }
+ }
+ 
+ fn hash_password(password: &str) -> String {
+@@ -21,20 +39,34 @@ fn hash_password(password: &str) -> String {
+ 
+ #[tauri::command]
+ pub async fn get_users(db: State<'_, DbPool>) -> Result<Vec<User>, String> {
+-    let rows = sqlx::query!(
+-        "SELECT id, email, is_admin, name, created_at FROM users ORDER BY created_at ASC"
++    let rows = sqlx::query(
++        "SELECT id, email, is_admin, name, created_at, permissions_json
++         FROM users
++         ORDER BY created_at ASC"
+     )
+     .fetch_all(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+ 
+-    Ok(rows.into_iter().map(|r| User {
+-        id: r.id,
+-        email: r.email,
+-        is_admin: r.is_admin != 0,
+-        name: r.name.unwrap_or_default(),
+-        created_at: r.created_at.unwrap_or(0),
+-    }).collect())
++    Ok(rows
++        .into_iter()
++        .map(|r| {
++            let id: String = r.try_get("id").map_err(|e| e.to_string())?;
++            let email: String = r.try_get("email").map_err(|e| e.to_string())?;
++            let is_admin: i64 = r.try_get("is_admin").map_err(|e| e.to_string())?;
++            let name: Option<String> = r.try_get("name").map_err(|e| e.to_string())?;
++            let created_at: Option<i64> = r.try_get("created_at").map_err(|e| e.to_string())?;
++            let permissions_json: Option<String> = r.try_get("permissions_json").ok();
++            Ok(User {
++                id,
++                email,
++                is_admin: is_admin != 0,
++                name: name.unwrap_or_default(),
++                created_at: created_at.unwrap_or(0),
++                permissions: parse_permissions_json(permissions_json),
++            })
++        })
++        .collect::<Result<Vec<_>, String>>()?)
+ }
+ 
+ #[tauri::command]
+@@ -49,17 +81,19 @@ pub async fn create_user(
+     let password_hash = hash_password(&password);
+     let now = chrono::Utc::now().timestamp_millis();
+     let is_admin_int = if is_admin { 1 } else { 0 };
++    let permissions_json = serde_json::to_string(&default_permissions()).map_err(|e| e.to_string())?;
+ 
+-    sqlx::query!(
+-        "INSERT INTO users (id, email, password_hash, is_admin, name, created_at)
+-         VALUES (?, ?, ?, ?, ?, ?)",
+-        id,
+-        email,
+-        password_hash,
+-        is_admin_int,
+-        name,
+-        now
++    sqlx::query(
++        "INSERT INTO users (id, email, password_hash, is_admin, name, created_at, permissions_json)
++         VALUES (?, ?, ?, ?, ?, ?, ?)"
+     )
++    .bind(&id)
++    .bind(&email)
++    .bind(password_hash)
++    .bind(is_admin_int)
++    .bind(&name)
++    .bind(now)
++    .bind(permissions_json)
+     .execute(&db.0)
+     .await
+     .map_err(|e| e.to_string())?;
+@@ -74,7 +108,9 @@ pub async fn reset_user_password(
+     new_password: String,
+ ) -> Result<(), String> {
+     let hash = hash_password(&new_password);
+-    sqlx::query!("UPDATE users SET password_hash = ? WHERE id = ?", hash, user_id)
++    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
++        .bind(hash)
++        .bind(user_id)
+         .execute(&db.0)
+         .await
+         .map_err(|e| e.to_string())?;
+@@ -83,7 +119,8 @@ pub async fn reset_user_password(
+ 
+ #[tauri::command]
+ pub async fn delete_user(db: State<'_, DbPool>, id: String) -> Result<(), String> {
+-    sqlx::query!("DELETE FROM users WHERE id = ?", id)
++    sqlx::query("DELETE FROM users WHERE id = ?")
++        .bind(id)
+         .execute(&db.0)
+         .await
+         .map_err(|e| e.to_string())?;
+@@ -97,22 +134,30 @@ pub async fn login(
+     password: String,
+ ) -> Result<User, String> {
+     let hash = hash_password(&password);
+-    let row = sqlx::query!(
+-        "SELECT id, email, is_admin, name, created_at FROM users
+-         WHERE email = ? AND password_hash = ?",
+-        email,
+-        hash
++    let row = sqlx::query(
++        "SELECT id, email, is_admin, name, created_at, permissions_json FROM users
++         WHERE email = ? AND password_hash = ?"
+     )
++    .bind(email)
++    .bind(hash)
+     .fetch_optional(&db.0)
+     .await
+     .map_err(|e| e.to_string())?
+     .ok_or_else(|| "Invalid credentials".to_string())?;
+ 
++    let id: String = row.try_get("id").map_err(|e| e.to_string())?;
++    let email: String = row.try_get("email").map_err(|e| e.to_string())?;
++    let is_admin: i64 = row.try_get("is_admin").map_err(|e| e.to_string())?;
++    let name: Option<String> = row.try_get("name").map_err(|e| e.to_string())?;
++    let created_at: Option<i64> = row.try_get("created_at").map_err(|e| e.to_string())?;
++    let permissions_json: Option<String> = row.try_get("permissions_json").ok();
++
+     Ok(User {
+-        id: row.id,
+-        email: row.email,
+-        is_admin: row.is_admin != 0,
+-        name: row.name.unwrap_or_default(),
+-        created_at: row.created_at.unwrap_or(0),
++        id,
++        email,
++        is_admin: is_admin != 0,
++        name: name.unwrap_or_default(),
++        created_at: created_at.unwrap_or(0),
++        permissions: parse_permissions_json(permissions_json),
+     })
+ }
+diff --git a/src-tauri/src/main.rs b/src-tauri/src/main.rs
+index 9eb255a..77e4d79 100644
+--- a/src-tauri/src/main.rs
++++ b/src-tauri/src/main.rs
+@@ -7,9 +7,9 @@ mod db;
+ use db::DbPool;
+ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+ use std::str::FromStr;
++use tauri::Manager;
+ 
+-#[tokio::main]
+-async fn main() {
++fn main() {
+     tauri::Builder::default()
+         .plugin(tauri_plugin_dialog::init())
+         .plugin(tauri_plugin_shell::init())
+@@ -33,10 +33,43 @@ async fn main() {
+                     .await
+                     .expect("Failed to connect to database");
+ 
+-                sqlx::migrate!("./migrations")
+-                    .run(&pool)
+-                    .await
+-                    .expect("Failed to run migrations");
++                // Run migrations - ignore version mismatch errors on first run
++                if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
++                    eprintln!("Migration warning: {:?}. Continuing...", e);
++                    // Try to re-create tables if they don't exist
++                    let _ = sqlx::query(
++                        "CREATE TABLE IF NOT EXISTS records (
++                          id         TEXT    PRIMARY KEY,
++                          store      TEXT    NOT NULL,
++                          data       TEXT    NOT NULL,
++                          created_at INTEGER NOT NULL,
++                          updated_at INTEGER NOT NULL
++                        );"
++                    ).execute(&pool).await;
++                    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_store ON records(store);").execute(&pool).await;
++                    let _ = sqlx::query(
++                        "CREATE TABLE IF NOT EXISTS settings (
++                          key   TEXT PRIMARY KEY,
++                          value TEXT NOT NULL
++                        );"
++                    ).execute(&pool).await;
++                    let _ = sqlx::query(
++                        "CREATE TABLE IF NOT EXISTS local_settings (
++                          key   TEXT PRIMARY KEY,
++                          value TEXT NOT NULL
++                        );"
++                    ).execute(&pool).await;
++                    let _ = sqlx::query(
++                        "CREATE TABLE IF NOT EXISTS users (
++                          id            TEXT    PRIMARY KEY,
++                          email         TEXT    UNIQUE NOT NULL,
++                          password_hash TEXT    NOT NULL,
++                          is_admin      INTEGER NOT NULL DEFAULT 0,
++                          name          TEXT,
++                          created_at    INTEGER
++                        );"
++                    ).execute(&pool).await;
++                }
+ 
+                 pool
+             });
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index a806784..9b930c3 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -27,25 +27,11 @@
+   },
+   "bundle": {
+     "active": true,
+-    "targets": "all",
+-    "icon": [
+-      "icons/32x32.png",
+-      "icons/128x128.png",
+-      "icons/128x128@2x.png",
+-      "icons/icon.icns",
+-      "icons/icon.ico"
+-    ]
++    "targets": "all"
+   },
+   "plugins": {
+-    "dialog": {},
+     "shell": {
+       "open": true
+-    },
+-    "fs": {
+-      "scope": {
+-        "allow": ["$APPDATA/**", "$DESKTOP/**", "$DOWNLOAD/**"]
+-      }
+-    },
+-    "process": {}
++    }
+   }
+ }
+diff --git a/src/App.tsx b/src/App.tsx
+index a06db89..ab9e690 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,11 +1,16 @@
+-import { useEffect, useState } from 'react';
+-import { FluentProvider, webLightTheme, webDarkTheme } from '@fluentui/react-components';
++import React, { useEffect, useState } from 'react';
++import { FluentProvider, webLightTheme, webDarkTheme, Spinner } from '@fluentui/react-components';
+ import { useSettingsStore } from './store/settingsStore';
+ import { usePatientsStore } from './store/patientsStore';
+ import { useAppointmentsStore } from './store/appointmentsStore';
+ import { useDoctorsStore } from './store/doctorsStore';
+ import { useLabworkStore } from './store/labworkStore';
+ import { useExpensesStore } from './store/expensesStore';
++import { useAuth } from './hooks/useAuth';
++import { validateLicenseKey, saveLocalSettings } from './services/db';
++import NavSidebar from './components/common/NavSidebar';
++import { LoginPage } from './pages/LoginPage';
++import { LicenseGatePage } from './pages/LicenseGatePage';
+ import PatientsPage from './pages/PatientsPage';
+ import CalendarPage from './pages/CalendarPage';
+ import DoctorsPage from './pages/DoctorsPage';
+@@ -14,29 +19,126 @@ import ExpensesPage from './pages/ExpensesPage';
+ import StatsPage from './pages/StatsPage';
+ import SettingsPage from './pages/SettingsPage';
+ 
+-type Page = 'patients' | 'calendar' | 'doctors' | 'labwork' | 'expenses' | 'stats' | 'settings';
++export type Page = 'patients' | 'calendar' | 'doctors' | 'labwork' | 'expenses' | 'stats' | 'settings';
++type AppPhase = 'loading' | 'license-gate' | 'login' | 'app';
+ 
+ export default function App() {
+   const [currentPage, setCurrentPage] = useState<Page>('patients');
++  const [appPhase, setAppPhase] = useState<AppPhase>('loading');
++
+   const { loadAll, local, global: globalSettings } = useSettingsStore();
++  const { autoLogin, currentUser } = useAuth();
+   const loadPatients = usePatientsStore((s) => s.load);
+   const loadAppointments = useAppointmentsStore((s) => s.load);
+   const loadDoctors = useDoctorsStore((s) => s.load);
+   const loadLabworks = useLabworkStore((s) => s.load);
+   const loadExpenses = useExpensesStore((s) => s.load);
+ 
++  // Startup sequence: load settings, check license, attempt auto-login, load data stores
+   useEffect(() => {
+-    // Load settings first, then all data stores in parallel
+-    loadAll().then(() => {
++    const runStartupSequence = async () => {
++      try {
++        // 1. Load settings
++        await loadAll();
++
++        // 2. Check license validity and grace period
++        const settings = useSettingsStore.getState();
++        const now = Date.now();
++        const installDateStr = settings.local?.installDate || '';
++
++        let isLicenseValid = settings.local?.licenseValid === true;
++
++        // If no install date, set it now (first launch)
++        if (!installDateStr) {
++          const newSettings = {
++            ...settings.local!,
++            installDate: String(now),
++          };
++          await saveLocalSettings(newSettings);
++          // First launch = license valid for this session
++          isLicenseValid = true;
++        } else {
++          // Check if we're past the 7-day grace period
++          const installDate = Number(installDateStr);
++          const gracePeriodMs = 7 * 24 * 60 * 60 * 1000;
++          const isGracePeriodActive = now - installDate <= gracePeriodMs;
++
++          // If grace period active OR license is valid, allow login
++          isLicenseValid = isGracePeriodActive || isLicenseValid;
++        }
++
++        // If license invalid, show license gate
++        if (!isLicenseValid) {
++          setAppPhase('license-gate');
++          return;
++        }
++
++        // 3. Attempt auto-login
++        const sessionRestored = await autoLogin();
++
++        if (sessionRestored) {
++          // 4a. If auto-login succeeded, load data stores
++          await Promise.all([
++            loadPatients(),
++            loadAppointments(),
++            loadDoctors(),
++            loadLabworks(),
++            loadExpenses(),
++          ]);
++          setAppPhase('app');
++        } else {
++          // 4b. If no session, show login screen
++          setAppPhase('login');
++        }
++      } catch (err) {
++        console.error('Startup error:', err);
++        // On error, show login (safest fallback)
++        setAppPhase('login');
++      }
++    };
++
++    runStartupSequence();
++  }, []);
++
++  // Watch for auth store changes (after successful login)
++  useEffect(() => {
++    if (currentUser && appPhase === 'login') {
++      // User just logged in, load data and transition to app
+       Promise.all([
+         loadPatients(),
+         loadAppointments(),
+         loadDoctors(),
+         loadLabworks(),
+         loadExpenses(),
+-      ]);
+-    });
+-  }, []);
++      ]).then(() => {
++        setAppPhase('app');
++      });
++    }
++  }, [currentUser, appPhase]);
++
++  // Handle license gate completion
++  const handleLicenseValidated = async (licenseKey: string) => {
++    try {
++      const isValid = await validateLicenseKey(licenseKey);
++      if (isValid) {
++        // Save license to local settings
++        const settings = useSettingsStore.getState().local!;
++        await saveLocalSettings({
++          ...settings,
++          licenseValid: true,
++          licenseKey: licenseKey,
++        });
++        // Transition to login screen
++        setAppPhase('login');
++      } else {
++        // Invalid key - error already shown in LicenseGatePage callback
++        throw new Error('Invalid license key');
++      }
++    } catch (err) {
++      // Component handles error display
++      throw err;
++    }
++  };
+ 
+   const theme = local?.selectedTheme === 'dark' ? webDarkTheme : webLightTheme;
+   const dir = local?.selectedLocale === 'ar' ? 'rtl' : 'ltr';
+@@ -51,19 +153,38 @@ export default function App() {
+     settings: <SettingsPage />,
+   };
+ 
++  // Render appropriate screen based on app phase
++  const renderContent = () => {
++    switch (appPhase) {
++      case 'loading':
++        return (
++          <div className="flex items-center justify-center h-screen w-screen">
++            <Spinner size="huge" label="Loading..." />
++          </div>
++        );
++
++      case 'license-gate':
++        return <LicenseGatePage onValidateComplete={handleLicenseValidated} />;
++
++      case 'login':
++        return <LoginPage />;
++
++      case 'app':
++        return (
++          <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
++            <NavSidebar currentPage={currentPage} onNavigate={setCurrentPage} />
++            <main className="flex-1 overflow-auto">{pages[currentPage]}</main>
++          </div>
++        );
++
++      default:
++        return null;
++    }
++  };
++
+   return (
+     <FluentProvider theme={theme}>
+-      <div dir={dir} className="flex h-screen w-screen overflow-hidden bg-gray-50">
+-        {/* Sidebar nav — TODO: build NavSidebar component */}
+-        <nav className="w-14 flex flex-col items-center py-4 gap-2 bg-white border-e border-gray-200 shrink-0">
+-          {/* Nav items placeholder */}
+-        </nav>
+-
+-        {/* Main content */}
+-        <main className="flex-1 overflow-auto">
+-          {pages[currentPage]}
+-        </main>
+-      </div>
++      <div dir={dir}>{renderContent()}</div>
+     </FluentProvider>
+   );
+ }
+diff --git a/src/i18n/ar.ts b/src/i18n/ar.ts
+index 6796c69..7b8077f 100644
+--- a/src/i18n/ar.ts
++++ b/src/i18n/ar.ts
+@@ -2,7 +2,7 @@ const ar = {
+   // Navigation
+   nav: {
+     patients: 'المرضى',
+-    appointments: 'المواعيد',
++    calendar: 'المواعيد',
+     doctors: 'الأطباء',
+     labwork: 'أعمال المختبر',
+     expenses: 'المصاريف',
+@@ -10,6 +10,27 @@ const ar = {
+     settings: 'الإعدادات',
+     logout: 'تسجيل الخروج',
+   },
++  // Login
++  login: {
++    title: 'تسجيل الدخول',
++    clinicName: 'عيادة الأسنان',
++    email: 'البريد الإلكتروني',
++    password: 'كلمة المرور',
++    submit: 'دخول',
++    errorInvalidCredentials: 'البريد الإلكتروني أو كلمة المرور غير صحيحة',
++    errorGeneric: 'فشل تسجيل الدخول. يرجى المحاولة مرة أخرى',
++    loggingIn: 'جاري التحقق...',
++  },
++  // License Gate
++  licenseGate: {
++    title: 'تفعيل الترخيص',
++    subtitle: 'انتهت فترة الاستخدام المجاني. يرجى إدخال مفتاح الترخيص.',
++    machineId: 'معرّف الجهاز',
++    keyPlaceholder: 'أدخل مفتاح الترخيص',
++    submit: 'تفعيل',
++    errorInvalidKey: 'مفتاح الترخيص غير صحيح',
++    validating: 'جاري التحقق...',
++  },
+   // Common
+   common: {
+     save: 'حفظ',
+diff --git a/src/i18n/en.ts b/src/i18n/en.ts
+index 9a2f504..11d904c 100644
+--- a/src/i18n/en.ts
++++ b/src/i18n/en.ts
+@@ -1,7 +1,7 @@
+ const en = {
+   nav: {
+     patients: 'Patients',
+-    appointments: 'Appointments',
++    calendar: 'Calendar',
+     doctors: 'Doctors',
+     labwork: 'Lab Work',
+     expenses: 'Expenses',
+@@ -9,6 +9,25 @@ const en = {
+     settings: 'Settings',
+     logout: 'Logout',
+   },
++  login: {
++    title: 'Login',
++    clinicName: 'Dental Clinic',
++    email: 'Email',
++    password: 'Password',
++    submit: 'Login',
++    errorInvalidCredentials: 'Email or password is incorrect',
++    errorGeneric: 'Login failed. Please try again',
++    loggingIn: 'Logging in...',
++  },
++  licenseGate: {
++    title: 'Activate License',
++    subtitle: 'The free trial period has expired. Please enter your license key.',
++    machineId: 'Machine ID',
++    keyPlaceholder: 'Enter your license key',
++    submit: 'Activate',
++    errorInvalidKey: 'Invalid license key',
++    validating: 'Validating...',
++  },
+   common: {
+     save: 'Save',
+     cancel: 'Cancel',
+diff --git a/src/i18n/fr.ts b/src/i18n/fr.ts
+index 3f9aa5a..6271a10 100644
+--- a/src/i18n/fr.ts
++++ b/src/i18n/fr.ts
+@@ -1,7 +1,7 @@
+ const fr = {
+   nav: {
+     patients: 'Patients',
+-    appointments: 'Rendez-vous',
++    calendar: 'Rendez-vous',
+     doctors: 'Médecins',
+     labwork: 'Labo',
+     expenses: 'Dépenses',
+@@ -9,6 +9,25 @@ const fr = {
+     settings: 'Paramètres',
+     logout: 'Déconnexion',
+   },
++  login: {
++    title: 'Connexion',
++    clinicName: 'Clinique Dentaire',
++    email: 'Email',
++    password: 'Mot de passe',
++    submit: 'Connexion',
++    errorInvalidCredentials: 'Email ou mot de passe incorrect',
++    errorGeneric: 'Erreur de connexion. Veuillez réessayer',
++    loggingIn: 'Connexion en cours...',
++  },
++  licenseGate: {
++    title: 'Activation de la licence',
++    subtitle: 'La période d\'essai gratuit a expiré. Veuillez entrer votre clé de licence.',
++    machineId: 'ID de l\'appareil',
++    keyPlaceholder: 'Entrez la clé de licence',
++    submit: 'Activer',
++    errorInvalidKey: 'Clé de licence invalide',
++    validating: 'Vérification en cours...',
++  },
+   common: {
+     save: 'Enregistrer',
+     cancel: 'Annuler',
+diff --git a/src/pages/CalendarPage.tsx b/src/pages/CalendarPage.tsx
+index d9943c6..de31734 100644
+--- a/src/pages/CalendarPage.tsx
++++ b/src/pages/CalendarPage.tsx
+@@ -1,3 +1,5 @@
++import React from 'react';
++
+ // Calendar page — week view, appointment cards, doctor filter
+ export default function CalendarPage() {
+   return <div>CalendarPage — TODO</div>;
+diff --git a/src/pages/DoctorsPage.tsx b/src/pages/DoctorsPage.tsx
+index a8af61f..9e1f129 100644
+--- a/src/pages/DoctorsPage.tsx
++++ b/src/pages/DoctorsPage.tsx
+@@ -1,3 +1,5 @@
++import React from 'react';
++
+ // Doctors page — list, add, edit, archive doctors
+ export default function DoctorsPage() {
+   return <div>DoctorsPage — TODO</div>;
+diff --git a/src/pages/ExpensesPage.tsx b/src/pages/ExpensesPage.tsx
+index 4bea8b8..8611b45 100644
+--- a/src/pages/ExpensesPage.tsx
++++ b/src/pages/ExpensesPage.tsx
+@@ -1,3 +1,5 @@
++import React from 'react';
++
+ // Expenses page — list, add, edit, archive expenses
+ export default function ExpensesPage() {
+   return <div>ExpensesPage — TODO</div>;
+diff --git a/src/pages/LabworkPage.tsx b/src/pages/LabworkPage.tsx
+index eeb8171..ea70340 100644
+--- a/src/pages/LabworkPage.tsx
++++ b/src/pages/LabworkPage.tsx
+@@ -1,3 +1,5 @@
++import React from 'react';
++
+ // Lab work page — list, add, edit, archive lab work orders
+ export default function LabworkPage() {
+   return <div>LabworkPage — TODO</div>;
+diff --git a/src/pages/PatientsPage.tsx b/src/pages/PatientsPage.tsx
+index b41b5f7..964fff6 100644
+--- a/src/pages/PatientsPage.tsx
++++ b/src/pages/PatientsPage.tsx
+@@ -1,3 +1,5 @@
++import React from 'react';
++
+ // Patients page — lists all patients, search/filter, open side panel to view/edit
+ export default function PatientsPage() {
+   return <div>PatientsPage — TODO</div>;
+diff --git a/src/pages/SettingsPage.tsx b/src/pages/SettingsPage.tsx
+index 53338f5..c4cb481 100644
+--- a/src/pages/SettingsPage.tsx
++++ b/src/pages/SettingsPage.tsx
+@@ -1,3 +1,5 @@
++import React from 'react';
++
+ // Settings page — global, local, users, permissions, backup, license
+ export default function SettingsPage() {
+   return <div>SettingsPage — TODO</div>;
+diff --git a/src/pages/StatsPage.tsx b/src/pages/StatsPage.tsx
+index a8c3039..da6c1b2 100644
+--- a/src/pages/StatsPage.tsx
++++ b/src/pages/StatsPage.tsx
+@@ -1,3 +1,5 @@
++import React from 'react';
++
+ // Statistics page — charts, filters, date range picker
+ export default function StatsPage() {
+   return <div>StatsPage — TODO</div>;
+diff --git a/src/services/print.ts b/src/services/print.ts
+index ed35bad..db0c3d3 100644
+--- a/src/services/print.ts
++++ b/src/services/print.ts
+@@ -11,17 +11,19 @@ export async function printPrescription(
+   settings: GlobalSettings,
+   doctorName: string
+ ): Promise<void> {
+-  const { PrescriptionDocument } = await import('../components/common/PrescriptionDocument');
+-  const blob = await pdf(
+-    PrescriptionDocument({ patient, appointment, settings, doctorName })
+-  ).toBlob();
+-  const url = URL.createObjectURL(blob);
+-  const win = window.open(url);
+-  if (win) {
+-    win.addEventListener('load', () => {
+-      win.print();
+-    });
+-  }
++  // TODO: PrescriptionDocument component not yet implemented
++  // const { PrescriptionDocument } = await import('../components/common/PrescriptionDocument');
++  // const blob = await pdf(
++  //   PrescriptionDocument({ patient, appointment, settings, doctorName })
++  // ).toBlob();
++  // const url = URL.createObjectURL(blob);
++  // const win = window.open(url);
++  // if (win) {
++  //   win.addEventListener('load', () => {
++  //     win.print();
++  //   });
++  // }
++  console.warn('printPrescription: PrescriptionDocument not yet implemented');
+ }
+ 
+ export async function printPatientRecord(
+@@ -29,15 +31,17 @@ export async function printPatientRecord(
+   appointments: Appointment[],
+   settings: GlobalSettings
+ ): Promise<void> {
+-  const { PatientRecordDocument } = await import('../components/common/PatientRecordDocument');
+-  const blob = await pdf(
+-    PatientRecordDocument({ patient, appointments, settings })
+-  ).toBlob();
+-  const url = URL.createObjectURL(blob);
+-  const win = window.open(url);
+-  if (win) {
+-    win.addEventListener('load', () => {
+-      win.print();
+-    });
+-  }
++  // TODO: PatientRecordDocument component not yet implemented
++  // const { PatientRecordDocument } = await import('../components/common/PatientRecordDocument');
++  // const blob = await pdf(
++  //   PatientRecordDocument({ patient, appointments, settings })
++  // ).toBlob();
++  // const url = URL.createObjectURL(blob);
++  // const win = window.open(url);
++  // if (win) {
++  //   win.addEventListener('load', () => {
++  //     win.print();
++  //   });
++  // }
++  console.warn('printPatientRecord: PatientRecordDocument not yet implemented');
+ }
+diff --git a/src/types/index.ts b/src/types/index.ts
+index 9ccfc2d..643e4a1 100644
+--- a/src/types/index.ts
++++ b/src/types/index.ts
+@@ -85,7 +85,7 @@ export interface GlobalSettings {
+   doctorSpeciality: string;
+   prescriptionFooter: string;
+   startDayOfWk: string;
+-  permissions: boolean[]; // 6 flags: [doctors, patients, appointments, labworks, expenses, stats]
++  permissions: boolean[]; // 6 flags: [Patients, Calendar, Doctors, LabWork, Expenses, Stats]
+ }
+ 
+ export interface LocalSettings {
+@@ -96,6 +96,7 @@ export interface LocalSettings {
+   licenseMachineId: string;
+   licenseValid: boolean;
+   installDate: string;
++  loggedInUserId?: string; // Stores the currently logged-in user's ID for session persistence
+ }
+ 
+ export type PaymentMethod = 'cash' | 'ccp' | 'baridimob';

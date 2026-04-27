@@ -1,13 +1,32 @@
 const fr = {
   nav: {
     patients: 'Patients',
-    appointments: 'Rendez-vous',
+    calendar: 'Rendez-vous',
     doctors: 'Médecins',
     labwork: 'Labo',
     expenses: 'Dépenses',
     stats: 'Statistiques',
     settings: 'Paramètres',
     logout: 'Déconnexion',
+  },
+  login: {
+    title: 'Connexion',
+    clinicName: 'Clinique Dentaire',
+    email: 'Email',
+    password: 'Mot de passe',
+    submit: 'Connexion',
+    errorInvalidCredentials: 'Email ou mot de passe incorrect',
+    errorGeneric: 'Erreur de connexion. Veuillez réessayer',
+    loggingIn: 'Connexion en cours...',
+  },
+  licenseGate: {
+    title: 'Activation de la licence',
+    subtitle: 'La période d\'essai gratuit a expiré. Veuillez entrer votre clé de licence.',
+    machineId: 'ID de l\'appareil',
+    keyPlaceholder: 'Entrez la clé de licence',
+    submit: 'Activer',
+    errorInvalidKey: 'Clé de licence invalide',
+    validating: 'Vérification en cours...',
   },
   common: {
     save: 'Enregistrer',

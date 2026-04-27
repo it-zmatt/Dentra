@@ -2,13 +2,34 @@ const ar = {
   // Navigation
   nav: {
     patients: 'المرضى',
-    appointments: 'المواعيد',
+    calendar: 'المواعيد',
     doctors: 'الأطباء',
     labwork: 'أعمال المختبر',
     expenses: 'المصاريف',
     stats: 'الإحصائيات',
     settings: 'الإعدادات',
     logout: 'تسجيل الخروج',
+  },
+  // Login
+  login: {
+    title: 'تسجيل الدخول',
+    clinicName: 'عيادة الأسنان',
+    email: 'البريد الإلكتروني',
+    password: 'كلمة المرور',
+    submit: 'دخول',
+    errorInvalidCredentials: 'البريد الإلكتروني أو كلمة المرور غير صحيحة',
+    errorGeneric: 'فشل تسجيل الدخول. يرجى المحاولة مرة أخرى',
+    loggingIn: 'جاري التحقق...',
+  },
+  // License Gate
+  licenseGate: {
+    title: 'تفعيل الترخيص',
+    subtitle: 'انتهت فترة الاستخدام المجاني. يرجى إدخال مفتاح الترخيص.',
+    machineId: 'معرّف الجهاز',
+    keyPlaceholder: 'أدخل مفتاح الترخيص',
+    submit: 'تفعيل',
+    errorInvalidKey: 'مفتاح الترخيص غير صحيح',
+    validating: 'جاري التحقق...',
   },
   // Common
   common: {

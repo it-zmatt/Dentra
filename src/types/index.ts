@@ -85,7 +85,7 @@ export interface GlobalSettings {
   doctorSpeciality: string;
   prescriptionFooter: string;
   startDayOfWk: string;
-  permissions: boolean[]; // 6 flags: [doctors, patients, appointments, labworks, expenses, stats]
+  permissions: boolean[]; // 6 flags: [Patients, Calendar, Doctors, LabWork, Expenses, Stats]
 }
 
 export interface LocalSettings {
@@ -96,6 +96,7 @@ export interface LocalSettings {
   licenseMachineId: string;
   licenseValid: boolean;
   installDate: string;
+  loggedInUserId?: string; // Stores the currently logged-in user's ID for session persistence
 }
 
 export type PaymentMethod = 'cash' | 'ccp' | 'baridimob';

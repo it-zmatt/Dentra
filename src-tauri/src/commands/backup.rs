@@ -1,10 +1,9 @@
-use tauri::State;
-use crate::db::DbPool;
+use tauri::Manager;
 
 #[tauri::command]
 pub async fn export_backup(app: tauri::AppHandle, dest_folder: String) -> Result<String, String> {
     use std::io::Write;
-    use zip::write::FileOptions;
+    use zip::write::SimpleFileOptions;
     use chrono::Local;
 
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -17,7 +16,7 @@ pub async fn export_backup(app: tauri::AppHandle, dest_folder: String) -> Result
 
     let file = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipWriter::new(file);
-    let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     // Add data.db
     if db_path.exists() {
@@ -40,7 +39,7 @@ fn add_dir_to_zip(
     zip: &mut zip::ZipWriter<std::fs::File>,
     base: &std::path::Path,
     dir: &std::path::Path,
-    options: zip::write::FileOptions,
+    options: zip::write::SimpleFileOptions,
 ) -> Result<(), String> {
     use std::io::Write;
 

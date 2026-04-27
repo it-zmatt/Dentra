@@ -5,10 +5,6 @@ description = "Dentra — Dental Clinic Management for Algerian Practices"
 authors = []
 edition = "2021"
 
-[lib]
-name = "dentra_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

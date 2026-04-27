@@ -89,9 +89,13 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT    NOT NULL,
   is_admin      INTEGER NOT NULL DEFAULT 0,
   name          TEXT,
-  created_at    INTEGER
+  created_at    INTEGER,
+  permissions_json TEXT NOT NULL DEFAULT '[false,false,false,false,false,false]'
 );
 ```
+
+`permissions_json` stores the per-user module access mask as a JSON array of 6 booleans.
+Malformed or missing payloads must be treated as deny-all (`[false,false,false,false,false,false]`).
 
 ---
 

@@ -1,6 +1,3 @@
-use tauri::State;
-use crate::db::DbPool;
-
 const DEVELOPER_SECRET: &str = "CHANGE_THIS_BEFORE_SHIPPING";
 
 pub fn generate_id() -> String {

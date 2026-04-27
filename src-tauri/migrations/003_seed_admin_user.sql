@@ -1,0 +1,15 @@
+-- Seed a test admin user for development and testing
+-- Email: admin@clinic.dz
+-- Password: admin123
+-- Note: User will be created manually via Rust command since sqlx migration
+-- tracking is causing version conflicts. This query is kept for reference.
+
+-- INSERT OR IGNORE INTO users (id, email, password_hash, is_admin, name, created_at)
+-- VALUES (
+--   'admin-user-001',
+--   'admin@clinic.dz',
+--   '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9',
+--   1,
+--   'Admin',
+--   cast((julianday('now') - julianday('1970-01-01')) * 86400000 as integer)
+-- );

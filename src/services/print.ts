@@ -11,17 +11,19 @@ export async function printPrescription(
   settings: GlobalSettings,
   doctorName: string
 ): Promise<void> {
-  const { PrescriptionDocument } = await import('../components/common/PrescriptionDocument');
-  const blob = await pdf(
-    PrescriptionDocument({ patient, appointment, settings, doctorName })
-  ).toBlob();
-  const url = URL.createObjectURL(blob);
-  const win = window.open(url);
-  if (win) {
-    win.addEventListener('load', () => {
-      win.print();
-    });
-  }
+  // TODO: PrescriptionDocument component not yet implemented
+  // const { PrescriptionDocument } = await import('../components/common/PrescriptionDocument');
+  // const blob = await pdf(
+  //   PrescriptionDocument({ patient, appointment, settings, doctorName })
+  // ).toBlob();
+  // const url = URL.createObjectURL(blob);
+  // const win = window.open(url);
+  // if (win) {
+  //   win.addEventListener('load', () => {
+  //     win.print();
+  //   });
+  // }
+  console.warn('printPrescription: PrescriptionDocument not yet implemented');
 }
 
 export async function printPatientRecord(
@@ -29,15 +31,17 @@ export async function printPatientRecord(
   appointments: Appointment[],
   settings: GlobalSettings
 ): Promise<void> {
-  const { PatientRecordDocument } = await import('../components/common/PatientRecordDocument');
-  const blob = await pdf(
-    PatientRecordDocument({ patient, appointments, settings })
-  ).toBlob();
-  const url = URL.createObjectURL(blob);
-  const win = window.open(url);
-  if (win) {
-    win.addEventListener('load', () => {
-      win.print();
-    });
-  }
+  // TODO: PatientRecordDocument component not yet implemented
+  // const { PatientRecordDocument } = await import('../components/common/PatientRecordDocument');
+  // const blob = await pdf(
+  //   PatientRecordDocument({ patient, appointments, settings })
+  // ).toBlob();
+  // const url = URL.createObjectURL(blob);
+  // const win = window.open(url);
+  // if (win) {
+  //   win.addEventListener('load', () => {
+  //     win.print();
+  //   });
+  // }
+  console.warn('printPatientRecord: PatientRecordDocument not yet implemented');
 }
